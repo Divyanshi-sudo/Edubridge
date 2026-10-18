@@ -1,0 +1,101 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  font-family: Inter, system-ui, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+  color: #172b4d;
+  background: #f5f7fb;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+html { background: #f5f7fb; }
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at top, rgba(214, 166, 59, 0.12), transparent 35%),
+    #f5f7fb;
+}
+
+* { box-sizing: border-box; }
+
+a { color: inherit; text-decoration: none; }
+button, input, textarea, select { font: inherit; }
+#root { min-height: 100vh; }
+
+/* Keep the existing utility-based screens while applying the requested light palette. */
+[class~="bg-slate-950"],
+[class~="bg-slate-950/70"],
+[class~="bg-slate-950/60"],
+[class~="bg-slate-950/40"],
+[class~="bg-slate-950/30"],
+[class~="bg-slate-900"],
+[class~="bg-slate-900/90"],
+[class~="bg-slate-900/80"],
+[class~="bg-slate-900/70"],
+[class~="bg-slate-900/50"],
+[class~="bg-slate-950/75"] {
+  background-color: #ffffff !important;
+}
+
+[class~="bg-slate-950/60"],
+[class~="bg-slate-950/40"],
+[class~="bg-slate-950/30"] {
+  background-color: #f7f8fb !important;
+}
+
+[class~="bg-slate-800"] { background-color: #eef1f6 !important; }
+[class~="bg-slate-800/50"] { background-color: #f3f5f9 !important; }
+[class~="hover:bg-slate-800"]:hover,
+[class~="hover:bg-slate-900"]:hover { background-color: #f2f4f8 !important; }
+[class~="border-slate-800"],
+[class~="border-slate-700"] { border-color: #dce2ec !important; }
+
+[class~="text-white"],
+[class~="text-slate-100"],
+[class~="text-slate-200"] { color: #172b4d !important; }
+[class~="text-slate-300"] { color: #354866 !important; }
+[class~="text-slate-400"] { color: #65748b !important; }
+[class~="text-slate-500"] { color: #718096 !important; }
+
+[class~="text-sky-200"],
+[class~="text-sky-300"],
+[class~="text-sky-400"] { color: #a77716 !important; }
+[class~="bg-sky-500"],
+[class~="hover:bg-sky-400"]:hover { background-color: #d6a63b !important; }
+[class~="bg-sky-500/15"],
+[class~="bg-sky-500/10"],
+[class~="bg-sky-500/5"] { background-color: #fbf4e3 !important; }
+[class~="border-sky-500/30"],
+[class~="border-sky-500/20"],
+[class~="border-sky-500/50"] { border-color: #e4c777 !important; }
+[class~="hover:border-sky-500"]:hover { border-color: #d6a63b !important; }
+[class~="hover:text-sky-300"]:hover,
+[class~="hover:text-sky-200"]:hover { color: #a77716 !important; }
+
+[class~="from-slate-900"] { --tw-gradient-from: #ffffff var(--tw-gradient-from-position) !important; }
+[class~="via-slate-900"] { --tw-gradient-via: #ffffff var(--tw-gradient-via-position) !important; }
+[class~="to-sky-950/50"] { --tw-gradient-to: #fbf4e3 var(--tw-gradient-to-position) !important; }
+[class~="shadow-sky-950/20"],
+[class~="shadow-slate-950/20"],
+[class~="shadow-slate-950/30"],
+[class~="shadow-slate-950/60"] { --tw-shadow-color: rgb(23 43 77 / 0.08) !important; }
+
+input,
+textarea,
+select {
+  color: #172b4d;
+  background-color: #fff;
+}
+
+input::placeholder,
+textarea::placeholder { color: #718096; }
+
+option { color: #172b4d; background: #fff; }
