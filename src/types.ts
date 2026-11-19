@@ -157,3 +157,29 @@ export interface AppState {
   announcements: Announcement[];
   notifications: NotificationItem[];
 }
+
+// ==========================================
+// SUPABASE DATABASE TYPES
+// ==========================================
+
+// EDI Groups table
+export interface SupabaseGroup {
+  id: string;
+  name: string;
+  project_title: string;
+  abstract: string;
+  status: 'active' | 'review' | 'completed';
+  semester: string;
+  created_by: string;
+  leader_id: string;
+  created_at: string;
+}
+
+// Group Members table
+export interface SupabaseGroupMember {
+  id: string;
+  group_id: string;
+  user_id: string;
+  membership_role: 'student' | 'guide';
+  created_at: string;
+}

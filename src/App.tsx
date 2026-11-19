@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { supabase } from './lib/supabase';
 import {
   BrowserRouter,
   Link,
@@ -53,14 +54,9 @@ import {
   createGroupInvitation,
   createGuideAvailability,
   createTask,
-  getCurrentUser,
-  getCurrentUserId,
   loadState,
-  login,
-  logout,
   markNotificationsRead,
   removeGuideAvailability,
-  registerUser,
   respondToGroupInvitation,
   saveState,
   updateBookingStatus,
@@ -69,47 +65,111 @@ import type { AppState, User } from './types';
 
 function App() {
   const [state, setState] = useState<AppState>(() => loadState());
-  const [currentUser, setCurrentUser] = useState<User | null>(() => getCurrentUser());
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
 
-  useEffect(() => {
-    const userId = getCurrentUserId();
-    if (!userId) {
+  const profileToUser = (profile: any): User => ({
+    id: profile.id,
+    fullName: profile.full_name || profile.email || 'EduBridge User',
+    email: profile.email || '',
+    password: '',
+    role: profile.role || 'student',
+    department: profile.department || '',
+    year: profile.year || '',
+    rollNumber: profile.roll_number || '',
+    phone: profile.phone || '',
+    profile: profile.profile || '',
+  });
+
+  const loadAuthenticatedUser = async (authUserId: string) => {
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('id', authUserId)
+      .single();
+
+    if (error) {
+      console.error('Could not load EduBridge profile:', error.message);
       setCurrentUser(null);
-      return;
+      return null;
     }
 
-    const user = state.users.find((entry) => entry.id === userId) ?? null;
+    const user = profileToUser(data);
     setCurrentUser(user);
-  }, [state]);
-
-  const handleLogin = (email: string, password: string) => {
-    const user = login(email, password);
-    if (user) {
-      setState(loadState());
-      setCurrentUser(user);
-      return user;
-    }
-    return null;
+    return user;
   };
 
-  const handleLogout = () => {
-    logout();
+  useEffect(() => {
+    let mounted = true;
+
+    async function restoreSession() {
+      const { data, error } = await supabase.auth.getSession();
+      if (error) console.error('Session restore error:', error.message);
+      if (mounted && data.session?.user) await loadAuthenticatedUser(data.session.user.id);
+      if (mounted) setAuthLoading(false);
+    }
+
+    restoreSession();
+    const { data: authListener } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (!mounted) return;
+      if (session?.user) {
+        // Fetch profile after the auth callback completes.
+        Promise.resolve().then(() => {
+          if (mounted) void loadAuthenticatedUser(session.user.id);
+        });
+      } else {
+        setCurrentUser(null);
+      }
+    });
+
+    return () => {
+      mounted = false;
+      authListener.subscription.unsubscribe();
+    };
+  }, []);
+
+  const handleLogin = async (email: string, password: string) => {
+    const { data, error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+    if (error) throw error;
+    if (!data.user) return null;
+    const profileUser = await loadAuthenticatedUser(data.user.id);
+    setState(loadState());
+    return profileUser;
+  };
+
+  const handleLogout = async () => {
+    const { error } = await supabase.auth.signOut();
+    if (error) console.error('Logout error:', error.message);
     setCurrentUser(null);
     setState(loadState());
   };
 
-  const handleRegister = (payload: {
+  const handleRegister = async (payload: {
     fullName: string;
     email: string;
     password: string;
     department: string;
-    year: string;
-    rollNumber?: string;
+    role: 'student' | 'faculty';
+    year?: string;
+    prn?: string;
   }) => {
-    const user = registerUser(payload);
+    const { data, error } = await supabase.auth.signUp({
+      email: payload.email.trim(),
+      password: payload.password,
+      options: { data: {
+        full_name: payload.fullName.trim(),
+        role: payload.role,
+        department: payload.department,
+        year: payload.year || '',
+        prn: payload.prn || '',
+      } },
+    });
+    if (error) throw error;
+    // If email confirmation is enabled, registration succeeds without a session.
+    if (!data.session || !data.user) return null;
+    const profileUser = await loadAuthenticatedUser(data.user.id);
     setState(loadState());
-    setCurrentUser(user);
-    return user;
+    return profileUser;
   };
 
   const refresh = () => setState(loadState());
@@ -118,14 +178,14 @@ function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/" element={<LandingPage />} />
-        <Route path="/login" element={<LoginPage onLogin={handleLogin} currentUser={currentUser} />} />
-        <Route path="/register" element={<RegisterPage onRegister={handleRegister} currentUser={currentUser} />} />
+        <Route path="/login" element={<AuthPage initialMode="login" onLogin={handleLogin} onRegister={handleRegister} currentUser={currentUser} authLoading={authLoading} />} />
+        <Route path="/register" element={<AuthPage initialMode="register" onLogin={handleLogin} onRegister={handleRegister} currentUser={currentUser} authLoading={authLoading} />} />
         <Route path="/forgot-password" element={<ForgotPasswordPage />} />
         <Route
           path="/dashboard"
           element={
             <ProtectedRoute currentUser={currentUser} allowedRoles={['student', 'faculty', 'admin']}>
-              <DashboardShell user={currentUser!} state={state} refresh={refresh} onLogout={handleLogout} />
+              <DashboardShell user={currentUser!} state={state} refresh={refresh} onLogout={() => { void handleLogout(); }} />
             </ProtectedRoute>
           }
         />
@@ -133,7 +193,7 @@ function App() {
           path="/student"
           element={
             <ProtectedRoute currentUser={currentUser} allowedRoles={['student']}>
-              <DashboardShell user={currentUser!} state={state} refresh={refresh} onLogout={handleLogout} />
+              <DashboardShell user={currentUser!} state={state} refresh={refresh} onLogout={() => { void handleLogout(); }} />
             </ProtectedRoute>
           }
         />
@@ -141,7 +201,7 @@ function App() {
           path="/faculty"
           element={
             <ProtectedRoute currentUser={currentUser} allowedRoles={['faculty']}>
-              <DashboardShell user={currentUser!} state={state} refresh={refresh} onLogout={handleLogout} />
+              <DashboardShell user={currentUser!} state={state} refresh={refresh} onLogout={() => { void handleLogout(); }} />
             </ProtectedRoute>
           }
         />
@@ -149,7 +209,7 @@ function App() {
           path="/admin"
           element={
             <ProtectedRoute currentUser={currentUser} allowedRoles={['admin']}>
-              <DashboardShell user={currentUser!} state={state} refresh={refresh} onLogout={handleLogout} />
+              <DashboardShell user={currentUser!} state={state} refresh={refresh} onLogout={() => { void handleLogout(); }} />
             </ProtectedRoute>
           }
         />
@@ -158,7 +218,7 @@ function App() {
           path="/:section"
           element={
             <ProtectedRoute currentUser={currentUser} allowedRoles={['student', 'faculty', 'admin']}>
-              <DashboardShell user={currentUser!} state={state} refresh={refresh} onLogout={handleLogout} />
+              <DashboardShell user={currentUser!} state={state} refresh={refresh} onLogout={() => { void handleLogout(); }} />
             </ProtectedRoute>
           }
         />
@@ -328,149 +388,112 @@ function FeatureCard({ icon: Icon, title, text }: { icon: LucideIcon; title: str
   );
 }
 
-function LoginPage({ onLogin, currentUser }: { onLogin: (email: string, password: string) => User | null; currentUser: User | null }) {
+function AuthPage({
+  initialMode,
+  onLogin,
+  onRegister,
+  currentUser,
+  authLoading,
+}: {
+  initialMode: 'login' | 'register';
+  onLogin: (email: string, password: string) => Promise<User | null>;
+  onRegister: (payload: { fullName: string; email: string; password: string; department: string; role: 'student' | 'faculty'; year?: string; prn?: string }) => Promise<User | null>;
+  currentUser: User | null;
+  authLoading: boolean;
+}) {
   const navigate = useNavigate();
-  const [email, setEmail] = useState('divyanshi@college.edu');
-  const [password, setPassword] = useState('student123');
+  const [portal, setPortal] = useState<'student' | 'faculty'>('student');
+  const [mode, setMode] = useState<'login' | 'register'>(initialMode);
+  const [form, setForm] = useState({ fullName: '', email: '', password: '', department: '', year: 'First Year', prn: '' });
   const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
+  const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
-    if (currentUser) navigate('/dashboard');
-  }, [currentUser, navigate]);
+    if (!authLoading && currentUser) navigate('/dashboard');
+  }, [currentUser, authLoading, navigate]);
 
-  const submit = (event: React.FormEvent) => {
-    event.preventDefault();
-    const user = onLogin(email, password);
-    if (user) {
-      navigate('/dashboard');
-      return;
-    }
-    setError('Invalid credentials. Try a demo account from the README or use admin@college.edu / faculty@college.edu.');
+  const switchPortal = (next: 'student' | 'faculty') => {
+    setPortal(next);
+    setError('');
+    setMessage('');
   };
 
-  return (
-    <div className="flex min-h-screen items-center justify-center bg-slate-950 px-4 py-12">
-      <div className="w-full max-w-md rounded-3xl border border-slate-800 bg-slate-900 p-8 shadow-2xl shadow-slate-950/60">
-        <div className="mb-8 flex items-center justify-between">
-          <div>
-            <p className="text-xs uppercase tracking-[0.25em] text-sky-300">EduBridge</p>
-            <h1 className="mt-2 text-3xl font-bold text-white">Sign in</h1>
-          </div>
-          <div className="rounded-full border border-sky-500/30 bg-sky-500/10 p-3 text-sky-300">
-            <Lock className="h-5 w-5" />
-          </div>
-        </div>
-
-        <form onSubmit={submit} className="space-y-5">
-          <div>
-            <label className="mb-2 block text-sm text-slate-300">College email</label>
-            <input value={email} onChange={(event) => setEmail(event.target.value)} className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white outline-none ring-0 transition focus:border-sky-500" />
-          </div>
-          <div>
-            <label className="mb-2 block text-sm text-slate-300">Password</label>
-            <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white outline-none ring-0 transition focus:border-sky-500" />
-          </div>
-          {error ? <p className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-200">{error}</p> : null}
-          <button type="submit" className="w-full rounded-xl bg-sky-500 px-4 py-3 font-semibold text-slate-950 transition hover:bg-sky-400">
-            Continue to dashboard
-          </button>
-        </form>
-
-        <div className="mt-5 flex items-center justify-between text-sm text-slate-400">
-          <Link to="/forgot-password" className="hover:text-sky-300">Forgot password?</Link>
-          <Link to="/register" className="hover:text-sky-300">Create account</Link>
-        </div>
-
-        <div className="mt-8 rounded-2xl border border-slate-800 bg-slate-950/40 p-4 text-xs text-slate-300">
-          <p className="mb-2 font-semibold text-slate-100">Demo accounts</p>
-          <div className="space-y-1">
-            <p>Student: divyanshi@college.edu / student123</p>
-            <p>Faculty: faculty@college.edu / faculty123</p>
-            <p>Admin: admin@college.edu / admin123</p>
-            <p>Classmates: rohan@college.edu or mira@college.edu / student123</p>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function RegisterPage({ onRegister, currentUser }: { onRegister: (payload: { fullName: string; email: string; password: string; department: string; year: string; rollNumber?: string }) => User | null; currentUser: User | null }) {
-  const navigate = useNavigate();
-  const [form, setForm] = useState({
-    fullName: '',
-    email: '',
-    password: '',
-    department: 'Computer Science',
-    year: 'Final Year',
-    rollNumber: '',
-  });
-  const [error, setError] = useState('');
-
-  useEffect(() => {
-    if (currentUser) navigate('/dashboard');
-  }, [currentUser, navigate]);
-
-  const handleSubmit = (event: React.FormEvent) => {
+  const submit = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!form.fullName || !form.email || !form.password) {
-      setError('Please fill in all required fields.');
-      return;
-    }
-
+    setError('');
+    setMessage('');
+    setSubmitting(true);
     try {
-      const user = onRegister(form);
-      if (user) {
+      if (mode === 'login') {
+        const user = await onLogin(form.email, form.password);
+        if (!user) throw new Error('Could not load your profile. Please contact the administrator.');
+        if (user.role !== portal && user.role !== 'admin') {
+          await supabase.auth.signOut();
+          throw new Error(`This account belongs to the ${user.role === 'faculty' ? 'Teacher' : 'Student'} portal. Please switch portals and try again.`);
+        }
         navigate('/dashboard');
+      } else {
+        if (!form.fullName.trim() || !form.email.trim() || !form.password || !form.department.trim()) {
+          throw new Error('Please fill in all required fields.');
+        }
+        if (portal === 'student' && !form.prn.trim()) throw new Error('Please enter your PRN.');
+        if (form.password.length < 6) throw new Error('Password must be at least 6 characters.');
+        const user = await onRegister({
+          fullName: form.fullName,
+          email: form.email,
+          password: form.password,
+          department: form.department,
+          role: portal,
+          ...(portal === 'student' ? { year: form.year, prn: form.prn } : {}),
+        });
+        if (user) navigate('/dashboard');
+        else setMessage('Account created successfully! Check your college email to confirm your address, then sign in.');
       }
-    } catch (validationError) {
-      setError(validationError instanceof Error ? validationError.message : 'Unable to create account.');
+    } catch (authError) {
+      setError(authError instanceof Error ? authError.message : 'Something went wrong. Please try again.');
+    } finally {
+      setSubmitting(false);
     }
   };
 
+  const isStudent = portal === 'student';
+  const title = mode === 'login' ? 'Welcome back' : `Create ${isStudent ? 'student' : 'teacher'} account`;
+
   return (
-    <div className="flex min-h-screen items-center justify-center bg-slate-950 px-4 py-12">
-      <div className="w-full max-w-xl rounded-3xl border border-slate-800 bg-slate-900 p-8 shadow-2xl shadow-slate-950/60">
-        <div className="mb-6 flex items-center justify-between">
-          <div>
-            <p className="text-xs uppercase tracking-[0.25em] text-sky-300">Create profile</p>
-            <h1 className="mt-2 text-3xl font-bold text-white">Student onboarding</h1>
-          </div>
-          <div className="rounded-full bg-sky-500/10 p-3 text-sky-300">
-            <UserRound className="h-5 w-5" />
-          </div>
+    <div className="min-h-screen bg-slate-950 px-4 py-10 text-slate-100 flex items-center justify-center">
+      <div className="w-full max-w-lg overflow-hidden rounded-3xl border border-slate-800 bg-slate-900 p-6 sm:p-8 shadow-2xl shadow-slate-950/60">
+        <div className="mb-7 flex items-center gap-3">
+          <div className="rounded-2xl bg-sky-500/10 p-3 text-sky-300"><GraduationCap className="h-6 w-6" /></div>
+          <div><p className="text-xs uppercase tracking-[0.25em] text-sky-300">EduBridge</p><p className="text-sm text-slate-400">Academic collaboration workspace</p></div>
+        </div>
+        <div className="mb-6">
+          <h1 className="text-2xl sm:text-3xl font-bold text-white">{title}</h1>
+          <p className="mt-2 text-sm text-slate-400">Choose your portal to continue.</p>
         </div>
 
-        <form onSubmit={handleSubmit} className="grid gap-5 md:grid-cols-2">
-          <div className="md:col-span-2">
-            <label className="mb-2 block text-sm text-slate-300">Full name</label>
-            <input value={form.fullName} onChange={(event) => setForm({ ...form, fullName: event.target.value })} className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white" />
-          </div>
-          <div className="md:col-span-2">
-            <label className="mb-2 block text-sm text-slate-300">College email</label>
-            <input type="email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white" />
-          </div>
-          <div className="md:col-span-2">
-            <label className="mb-2 block text-sm text-slate-300">Password</label>
-            <input type="password" value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white" />
-          </div>
-          <div>
-            <label className="mb-2 block text-sm text-slate-300">Department</label>
-            <input value={form.department} onChange={(event) => setForm({ ...form, department: event.target.value })} className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white" />
-          </div>
-          <div>
-            <label className="mb-2 block text-sm text-slate-300">Academic year</label>
-            <input value={form.year} onChange={(event) => setForm({ ...form, year: event.target.value })} className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white" />
-          </div>
-          <div className="md:col-span-2">
-            <label className="mb-2 block text-sm text-slate-300">Roll number</label>
-            <input value={form.rollNumber} onChange={(event) => setForm({ ...form, rollNumber: event.target.value })} className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white" />
-          </div>
-          {error ? <div className="md:col-span-2 rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-200">{error}</div> : null}
-          <button type="submit" className="md:col-span-2 rounded-xl bg-sky-500 px-4 py-3 font-semibold text-slate-950 hover:bg-sky-400">
-            Register and sign in
-          </button>
+        {/* Sliding Student / Teacher portal selector */}
+        <div className="relative mb-7 grid grid-cols-2 rounded-2xl border border-slate-800 bg-slate-950 p-1.5">
+          <div className={`absolute inset-y-1.5 left-1.5 w-[calc(50%-6px)] rounded-xl bg-sky-500 shadow-lg shadow-sky-950/30 transition-transform duration-300 ease-in-out ${isStudent ? 'translate-x-0' : 'translate-x-full'}`} />
+          <button type="button" onClick={() => switchPortal('student')} className={`relative z-10 rounded-xl py-3 text-sm font-semibold transition-colors ${isStudent ? 'text-slate-950' : 'text-slate-400 hover:text-white'}`}><GraduationCap className="mr-2 inline h-4 w-4" />Student</button>
+          <button type="button" onClick={() => switchPortal('faculty')} className={`relative z-10 rounded-xl py-3 text-sm font-semibold transition-colors ${!isStudent ? 'text-slate-950' : 'text-slate-400 hover:text-white'}`}><TeacherIcon className="mr-2 inline h-4 w-4" />Teacher</button>
+        </div>
+
+        <form onSubmit={submit} className="space-y-4">
+          {mode === 'register' && <div className="animate-in fade-in slide-in-from-right-3 duration-300"><label className="mb-2 block text-sm text-slate-300">Full name</label><input required value={form.fullName} onChange={e => setForm({ ...form, fullName: e.target.value })} placeholder="Your full name" className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white outline-none focus:border-sky-500" /></div>}
+          <div><label className="mb-2 block text-sm text-slate-300">{isStudent ? 'College email' : 'Official college email'}</label><input required type="email" value={form.email} onChange={e => setForm({ ...form, email: e.target.value })} placeholder="name@college.edu" className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white outline-none focus:border-sky-500" /></div>
+          {mode === 'register' && <div className="animate-in fade-in slide-in-from-right-3 duration-300"><label className="mb-2 block text-sm text-slate-300">Department</label><input required value={form.department} onChange={e => setForm({ ...form, department: e.target.value })} placeholder="e.g. Computer Science" className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white outline-none focus:border-sky-500" /></div>}
+          {mode === 'register' && isStudent && <div className="grid grid-cols-2 gap-4 animate-in fade-in slide-in-from-right-3 duration-300"><div><label className="mb-2 block text-sm text-slate-300">Year</label><select value={form.year} onChange={e => setForm({ ...form, year: e.target.value })} className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white"><option>First Year</option><option>Second Year</option><option>Third Year</option><option>Fourth Year</option></select></div><div><label className="mb-2 block text-sm text-slate-300">PRN</label><input required value={form.prn} onChange={e => setForm({ ...form, prn: e.target.value })} placeholder="Your PRN" className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white outline-none focus:border-sky-500" /></div></div>}
+          <div><label className="mb-2 block text-sm text-slate-300">Password</label><input required type="password" minLength={6} value={form.password} onChange={e => setForm({ ...form, password: e.target.value })} placeholder="At least 6 characters" className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white outline-none focus:border-sky-500" /></div>
+          {error && <p role="alert" className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-200">{error}</p>}
+          {message && <p role="status" className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-200">{message}</p>}
+          <button type="submit" disabled={submitting || authLoading} className="w-full rounded-xl bg-sky-500 px-4 py-3 font-semibold text-slate-950 transition hover:bg-sky-400 disabled:opacity-60">{submitting ? (mode === 'login' ? 'Signing in…' : 'Creating account…') : (mode === 'login' ? 'Sign in' : 'Create account')}</button>
         </form>
+        <div className="mt-5 flex items-center justify-between text-sm text-slate-400">
+          {mode === 'login' ? <Link to="/forgot-password" className="hover:text-sky-300">Forgot password?</Link> : <span>Already registered?</span>}
+          <button type="button" onClick={() => { setMode(mode === 'login' ? 'register' : 'login'); setError(''); setMessage(''); }} className="font-medium text-sky-300 hover:text-sky-200">{mode === 'login' ? 'Create account' : 'Sign in instead'}</button>
+        </div>
+        <Link to="/" className="mt-6 block text-center text-sm text-slate-500 hover:text-slate-300">← Back to home</Link>
       </div>
     </div>
   );
@@ -1454,139 +1477,179 @@ function AnnouncementsPage({ state, refresh }: { state: AppState; refresh: () =>
   );
 }
 
-function GroupsPage({ user, state, refresh }: { user: User; state: AppState; refresh: () => void }) {
-  const [inviteeId, setInviteeId] = useState('');
-  const [inviteError, setInviteError] = useState('');
-  const [inviteNotice, setInviteNotice] = useState('');
-  const myGroup = state.groups.find((group) => group.memberIds.includes(user.id));
-  const inviteCandidates = state.users.filter((candidate) =>
-    candidate.role === 'student' &&
-    myGroup &&
-    !myGroup.memberIds.includes(candidate.id) &&
-    !state.groupInvitations.some((invitation) =>
-      invitation.groupId === myGroup.id &&
-      invitation.recipientId === candidate.id &&
-      invitation.status === 'pending',
-    ),
-  );
-  const incomingInvitations = state.groupInvitations.filter((invitation) =>
-    invitation.recipientId === user.id && invitation.status === 'pending',
-  );
-  const outgoingInvitations = state.groupInvitations.filter((invitation) =>
-    invitation.senderId === user.id && invitation.status === 'pending',
-  );
+function GroupsPage({ user }: { user: User; state: AppState; refresh: () => void }) {
+  const [loading, setLoading] = useState(true);
+  const [group, setGroup] = useState<any>(null);
+  const [members, setMembers] = useState<any[]>([]);
+  const [error, setError] = useState('');
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState('');
+  const [createNotice, setCreateNotice] = useState('');
+  const [form, setForm] = useState({ name: '', projectTitle: '', abstract: '', semester: '' });
 
-  const sendInvitation = (event: React.FormEvent) => {
+  const loadMyGroup = async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const { data: membership, error: membershipError } = await supabase
+        .from('group_members')
+        .select('group_id')
+        .eq('user_id', user.id)
+        .eq('membership_role', 'student')
+        .maybeSingle();
+      if (membershipError) throw membershipError;
+      if (!membership) {
+        setGroup(null);
+        setMembers([]);
+        return;
+      }
+
+      const { data: groupData, error: groupError } = await supabase
+        .from('edi_groups')
+        .select('*')
+        .eq('id', membership.group_id)
+        .single();
+      if (groupError) throw groupError;
+
+      const { data: memberRows, error: membersError } = await supabase
+        .from('group_members')
+        .select('id, group_id, user_id, membership_role, created_at')
+        .eq('group_id', groupData.id);
+      if (membersError) throw membersError;
+
+      const memberIds = (memberRows ?? []).map((row: any) => row.user_id);
+      let profiles: any[] = [];
+      if (memberIds.length) {
+        const { data: profileRows, error: profilesError } = await supabase
+          .from('profiles')
+          .select('id, full_name, email, department, role')
+          .in('id', memberIds);
+        if (profilesError) throw profilesError;
+        profiles = profileRows ?? [];
+      }
+      const mappedMembers = (memberRows ?? []).map((row: any) => ({
+        ...row,
+        profile: profiles.find((profile: any) => profile.id === row.user_id) ?? null,
+      }));
+      setGroup(groupData);
+      setMembers(mappedMembers);
+    } catch (loadError) {
+      console.error('Groups page load error:', loadError);
+      setError(loadError instanceof Error ? loadError.message : 'Unable to load your group from Supabase.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void loadMyGroup();
+  }, [user.id]);
+
+  const createGroup = async (event: React.FormEvent) => {
     event.preventDefault();
+    setCreateError('');
+    setCreateNotice('');
+    if (!form.name.trim() || !form.projectTitle.trim() || !form.semester.trim()) {
+      setCreateError('Please enter your group name, project title, and semester.');
+      return;
+    }
+    setCreating(true);
     try {
-      createGroupInvitation(myGroup?.id ?? '', user.id, inviteeId);
-      setInviteError('');
-      setInviteNotice('Invitation sent. Your classmate can accept it from their account.');
-      setInviteeId('');
-      refresh();
-    } catch (error) {
-      setInviteError(error instanceof Error ? error.message : 'Unable to send invitation.');
+      // Confirm the real Supabase Auth user before inserting. RLS compares created_by
+      // against auth.uid(), so use the Auth ID directly instead of relying on UI state.
+      const { data: authData, error: authError } = await supabase.auth.getUser();
+      if (authError) throw authError;
+      const authUserId = authData.user?.id;
+      if (!authUserId) throw new Error('Your Supabase session is missing. Please log out and log in again.');
+      if (authUserId !== user.id) {
+        throw new Error(`Account ID mismatch. Auth ID: ${authUserId}; profile ID: ${user.id}. Please log out and log in again.`);
+      }
+
+      const { error: insertError } = await supabase
+        .from('edi_groups')
+        .insert({
+          name: form.name.trim(),
+          project_title: form.projectTitle.trim(),
+          abstract: form.abstract.trim(),
+          semester: form.semester.trim(),
+          status: 'active',
+          created_by: authUserId,
+          leader_id: authUserId,
+        });
+      if (insertError) throw insertError;
+      setCreateNotice(`Group “${form.name.trim()}” created successfully. You are its leader.`);
+      setForm({ name: '', projectTitle: '', abstract: '', semester: '' });
+      await loadMyGroup();
+    } catch (createErr: any) {
+      console.error('Create group error:', createErr);
+      const detailedMessage = createErr?.message || createErr?.details || createErr?.hint || createErr?.error_description;
+      setCreateError(detailedMessage ? String(detailedMessage) : 'Unable to create group. Check the browser console for details.');
+    } finally {
+      setCreating(false);
     }
   };
 
-  const respondToInvitation = (invitationId: string, response: 'accepted' | 'declined') => {
-    try {
-      respondToGroupInvitation(invitationId, user.id, response);
-      setInviteError('');
-      refresh();
-    } catch (error) {
-      setInviteError(error instanceof Error ? error.message : 'Unable to respond to invitation.');
-    }
-  };
+  const isLeader = group?.leader_id === user.id;
+  const studentMembers = members.filter((member) => member.membership_role === 'student');
+  const leader = members.find((member) => member.user_id === group?.leader_id);
 
   return (
     <div className="space-y-8">
-      {user.role === 'student' && incomingInvitations.length > 0 ? (
-        <section className="rounded-3xl border border-amber-400/50 bg-amber-50 p-6">
-          <p className="text-xs uppercase tracking-[0.25em] text-amber-800">Team invitations</p>
-          <h3 className="mt-2 text-2xl font-bold text-slate-900">Invited to join a group</h3>
-          <div className="mt-5 space-y-3">
-            {incomingInvitations.map((invitation) => {
-              const group = state.groups.find((item) => item.id === invitation.groupId);
-              const sender = state.users.find((item) => item.id === invitation.senderId);
-              return (
-                <article key={invitation.id} className="flex flex-col gap-4 rounded-2xl border border-amber-200 bg-white p-4 sm:flex-row sm:items-center sm:justify-between">
-                  <div>
-                    <p className="font-semibold text-slate-900">{group?.name ?? 'Academic group'}</p>
-                    <p className="mt-1 text-sm text-slate-600">{group?.projectTitle}</p>
-                    <p className="mt-1 text-sm text-slate-500">Invited by {sender?.fullName ?? 'a classmate'}</p>
-                  </div>
-                  <div className="flex gap-2">
-                    <button type="button" onClick={() => respondToInvitation(invitation.id, 'accepted')} className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700">Accept</button>
-                    <button type="button" onClick={() => respondToInvitation(invitation.id, 'declined')} className="rounded-lg border border-slate-300 px-4 py-2 text-sm text-slate-700 hover:border-rose-400 hover:text-rose-700">Decline</button>
-                  </div>
-                </article>
-              );
-            })}
+      <section className="rounded-3xl border border-slate-800 bg-slate-900/80 p-6">
+        <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p className="text-xs uppercase tracking-[0.25em] text-sky-300">Groups · Supabase connected</p>
+            <h3 className="mt-2 text-2xl font-bold text-white">My academic team</h3>
+            <p className="mt-2 text-sm text-slate-400">Your group and membership are loaded from the database.</p>
           </div>
+          <button type="button" onClick={() => void loadMyGroup()} disabled={loading} className="rounded-full border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:border-sky-500 hover:text-sky-300 disabled:opacity-50">
+            {loading ? 'Loading…' : 'Refresh'}
+          </button>
+        </div>
+        {loading ? (
+          <div className="rounded-2xl border border-slate-800 bg-slate-950/60 p-8 text-center text-slate-400">Loading your group…</div>
+        ) : error ? (
+          <div className="rounded-2xl border border-rose-500/30 bg-rose-500/10 p-5 text-sm text-rose-200"><p className="font-semibold">We couldn't load your group.</p><p className="mt-2">{error}</p><button type="button" onClick={() => void loadMyGroup()} className="mt-4 rounded-lg border border-rose-400/30 px-3 py-2 hover:bg-rose-500/10">Try again</button></div>
+        ) : !group ? (
+          <div className="rounded-2xl border border-slate-800 bg-slate-950/60 p-8 text-center">
+            <Users className="mx-auto h-10 w-10 text-sky-300" />
+            <h4 className="mt-4 text-lg font-semibold text-white">You're not in a group yet</h4>
+            <p className="mt-2 text-sm text-slate-400">Create your team below or accept an invitation when you receive one.</p>
+          </div>
+        ) : (
+          <div className="grid gap-5 lg:grid-cols-[1.2fr_0.8fr]">
+            <div className="rounded-2xl border border-sky-500/20 bg-sky-500/5 p-5">
+              <div className="flex flex-wrap items-center justify-between gap-3"><span className="rounded-full bg-sky-500/10 px-3 py-1 text-xs uppercase tracking-[0.18em] text-sky-300">{group.status || 'Active'}</span><span className="rounded-full border border-slate-700 px-3 py-1 text-xs text-slate-300">{studentMembers.length}/6 students</span></div>
+              <h4 className="mt-4 text-2xl font-bold text-white">{group.name}</h4><p className="mt-2 text-lg text-sky-200">{group.project_title || 'Project title not added yet'}</p><p className="mt-4 text-sm leading-6 text-slate-300">{group.abstract || 'Your group has not added a project abstract yet.'}</p>
+              <div className="mt-5 flex flex-wrap gap-2 text-xs text-slate-400">{group.semester ? <span className="rounded-full border border-slate-700 px-3 py-1">Semester: {group.semester}</span> : null}{isLeader ? <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3 py-1 text-emerald-300">You are the group leader</span> : null}</div>
+            </div>
+            <div className="rounded-2xl border border-slate-800 bg-slate-950/60 p-5"><h4 className="font-semibold text-white">Team details</h4><div className="mt-4 space-y-3 text-sm">
+              <div className="flex items-center justify-between gap-3 rounded-xl border border-slate-800 px-3 py-3"><span className="text-slate-400">Group leader</span><span className="text-right font-medium text-white">{leader?.profile?.full_name || (isLeader ? user.fullName : 'Not found')}</span></div>
+              <div className="flex items-center justify-between gap-3 rounded-xl border border-slate-800 px-3 py-3"><span className="text-slate-400">Students</span><span className="font-medium text-white">{studentMembers.length} / 6</span></div>
+              <div className="flex items-center justify-between gap-3 rounded-xl border border-slate-800 px-3 py-3"><span className="text-slate-400">Faculty guide</span><span className="font-medium text-white">{members.filter((member) => member.membership_role === 'guide').map((member) => member.profile?.full_name || 'Faculty').join(', ') || 'Not assigned'}</span></div>
+            </div></div>
+          </div>
+        )}
+      </section>
+
+      {!loading && !error && !group && user.role === 'student' ? (
+        <section className="rounded-3xl border border-slate-800 bg-slate-900/80 p-6">
+          <p className="text-xs uppercase tracking-[0.25em] text-sky-300">Create a team</p><h3 className="mt-2 text-2xl font-bold text-white">Start your EDI project group</h3><p className="mt-2 text-sm text-slate-400">You will automatically become the group leader. You can invite students after creating the team.</p>
+          {createError ? <div className="mt-4 rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-sm text-rose-200">{createError}</div> : null}
+          {createNotice ? <div className="mt-4 rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-200">{createNotice}</div> : null}
+          <form onSubmit={createGroup} className="mt-5 grid gap-4 md:grid-cols-2">
+            <div><label className="mb-2 block text-sm text-slate-300">Group name *</label><input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Team Innovators" className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white outline-none focus:border-sky-500" /></div>
+            <div><label className="mb-2 block text-sm text-slate-300">Project title *</label><input value={form.projectTitle} onChange={(e) => setForm({ ...form, projectTitle: e.target.value })} placeholder="Your EDI project title" className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white outline-none focus:border-sky-500" /></div>
+            <div><label className="mb-2 block text-sm text-slate-300">Semester *</label><input value={form.semester} onChange={(e) => setForm({ ...form, semester: e.target.value })} placeholder="e.g. 2026-27 Semester 1" className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white outline-none focus:border-sky-500" /></div>
+            <div className="md:col-span-2"><label className="mb-2 block text-sm text-slate-300">Project abstract (optional)</label><textarea value={form.abstract} onChange={(e) => setForm({ ...form, abstract: e.target.value })} rows={3} placeholder="Briefly describe your project idea…" className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white outline-none focus:border-sky-500" /></div>
+            <div className="md:col-span-2"><button type="submit" disabled={creating} className="inline-flex items-center gap-2 rounded-xl bg-sky-500 px-5 py-3 font-semibold text-slate-950 hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-60"><Plus className="h-4 w-4" />{creating ? 'Creating group…' : 'Create group'}</button></div>
+          </form>
         </section>
       ) : null}
 
-      <section className="rounded-3xl border border-slate-800 bg-slate-900/80 p-6">
-        <div className="mb-5 flex items-center justify-between">
-          <div>
-            <p className="text-xs uppercase tracking-[0.25em] text-sky-300">Groups</p>
-            <h3 className="mt-2 text-2xl font-bold text-white">Academic teams</h3>
-          </div>
-          <span className="rounded-full border border-slate-700 px-3 py-1 text-xs text-slate-300">{state.groups.length} projects</span>
-        </div>
-
-        <div className="grid gap-4 md:grid-cols-2">
-          {state.groups.map((group) => (
-            <div key={group.id} className="rounded-2xl border border-slate-800 bg-slate-950/60 p-4">
-              <div className="flex items-center justify-between">
-                <p className="text-lg font-semibold text-white">{group.name}</p>
-                <span className="rounded-full bg-emerald-500/10 px-2 py-1 text-[10px] uppercase tracking-[0.2em] text-emerald-300">{group.status}</span>
-              </div>
-              <p className="mt-3 text-slate-300">{group.projectTitle}</p>
-              <p className="mt-2 text-sm text-slate-400">Members: {group.memberIds.length}</p>
-              <div className="mt-4 flex flex-wrap gap-2">
-                {group.memberIds.map((memberId) => {
-                  const member = state.users.find((candidate) => candidate.id === memberId);
-                  return <span key={memberId} className="rounded-full border border-slate-700 px-3 py-1 text-xs text-slate-300">{member?.fullName ?? 'Student'}</span>;
-                })}
-              </div>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      {user.role === 'student' && myGroup ? (
-        <section className="rounded-3xl border border-slate-800 bg-slate-900/80 p-6">
-          <div className="mb-5">
-            <p className="text-xs uppercase tracking-[0.25em] text-sky-300">Grow your team</p>
-            <h3 className="mt-2 text-2xl font-bold text-white">Invite a classmate</h3>
-            <p className="mt-2 text-sm text-slate-400">Your classmate will see this invitation in Groups after signing in to their own account. They join only if they accept.</p>
-          </div>
-          <form onSubmit={sendInvitation} className="grid gap-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
-            <div>
-              <label htmlFor="invite-classmate" className="mb-2 block text-sm text-slate-300">Classmate</label>
-              <select id="invite-classmate" required value={inviteeId} onChange={(event) => setInviteeId(event.target.value)} className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white">
-                <option value="">Choose a student to invite</option>
-                {inviteCandidates.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.fullName} · {candidate.department}</option>)}
-              </select>
-            </div>
-            <button type="submit" disabled={!inviteeId} className="rounded-xl bg-sky-500 px-5 py-3 font-semibold text-slate-950 hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-50">Send invitation</button>
-          </form>
-          {inviteError ? <p role="alert" className="mt-4 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">{inviteError}</p> : null}
-          {inviteNotice ? <p role="status" className="mt-4 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">{inviteNotice}</p> : null}
-          {outgoingInvitations.length ? (
-            <div className="mt-6">
-              <h4 className="mb-3 font-semibold text-white">Waiting for a response</h4>
-              <div className="space-y-2">
-                {outgoingInvitations.map((invitation) => {
-                  const candidate = state.users.find((item) => item.id === invitation.recipientId);
-                  return <div key={invitation.id} className="flex items-center justify-between rounded-xl border border-slate-800 bg-slate-950/60 px-4 py-3 text-sm"><span className="text-slate-200">{candidate?.fullName ?? 'Classmate'}</span><span className="rounded-full bg-amber-100 px-3 py-1 text-xs text-amber-900">Invitation pending</span></div>;
-                })}
-              </div>
-            </div>
-          ) : null}
-          {!inviteCandidates.length && !outgoingInvitations.length ? <p className="mt-4 text-sm text-slate-400">All available classmates are already group members or have a pending invitation.</p> : null}
+      {group ? (
+        <section className="rounded-3xl border border-slate-800 bg-slate-900/80 p-6"><div className="mb-5 flex items-center justify-between gap-3"><div><p className="text-xs uppercase tracking-[0.25em] text-sky-300">Team directory</p><h3 className="mt-2 text-2xl font-bold text-white">Group members</h3></div><span className="rounded-full border border-slate-700 px-3 py-1 text-xs text-slate-300">{members.length} total</span></div>
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{members.map((member) => {const profile = member.profile; const memberIsLeader = member.user_id === group.leader_id; return <div key={member.id} className="rounded-2xl border border-slate-800 bg-slate-950/60 p-4"><div className="flex items-start gap-3"><div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-sky-500/10 text-sky-300"><UserRound className="h-5 w-5" /></div><div className="min-w-0"><p className="font-semibold text-white">{profile?.full_name || 'EduBridge member'}{member.user_id === user.id ? ' (You)' : ''}</p><p className="mt-1 text-xs text-slate-400">{profile?.department || 'Department not specified'}</p><div className="mt-2 flex flex-wrap gap-1.5">{memberIsLeader ? <span className="rounded-full bg-emerald-500/10 px-2 py-1 text-[10px] text-emerald-300">Leader</span> : null}{member.membership_role === 'guide' ? <span className="rounded-full bg-violet-500/10 px-2 py-1 text-[10px] text-violet-300">Faculty guide</span> : null}</div></div></div></div>;})}</div>
         </section>
       ) : null}
     </div>
