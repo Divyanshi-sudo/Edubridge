@@ -1,5 +1,11 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { supabase } from './lib/supabase';
+import SummaryCard from './components/SummaryCard';
+import FeatureCard from './components/FeatureCard';
+import MetricTile from './components/MetricTile';
+import { extractPDFData } from './lib/pdfExtractor';
+import { parseTimetableItems } from './lib/timetableParser';
+import SmartTimetable from './pages/SmartTimetable';
 import {
   BrowserRouter,
   Link,
@@ -361,32 +367,6 @@ function LandingPage() {
   );
 }
 
-function SummaryCard({ title, value, subtitle, icon: Icon }: { title: string; value: string; subtitle: string; icon: LucideIcon }) {
-  return (
-    <div className="rounded-2xl border border-slate-800 bg-slate-950/60 p-4">
-      <div className="mb-4 flex items-center justify-between">
-        <span className="text-sm text-slate-400">{title}</span>
-        <span className="rounded-lg bg-sky-500/10 p-2 text-sky-300">
-          <Icon className="h-4 w-4" />
-        </span>
-      </div>
-      <div className="text-3xl font-bold text-white">{value}</div>
-      <div className="mt-1 text-xs text-slate-400">{subtitle}</div>
-    </div>
-  );
-}
-
-function FeatureCard({ icon: Icon, title, text }: { icon: LucideIcon; title: string; text: string }) {
-  return (
-    <div className="rounded-3xl border border-slate-800 bg-slate-900/70 p-6 shadow-lg shadow-slate-950/20">
-      <div className="mb-5 inline-flex rounded-2xl bg-sky-500/10 p-3 text-sky-300">
-        <Icon className="h-6 w-6" />
-      </div>
-      <h3 className="mb-3 text-xl font-semibold text-white">{title}</h3>
-      <p className="text-sm leading-6 text-slate-300">{text}</p>
-    </div>
-  );
-}
 
 function AuthPage({
   initialMode,
@@ -560,33 +540,34 @@ function DashboardShell({
   const navigate = useNavigate();
   const { pathname } = useLocation();
 
-  const navItems = useMemo(() => {
+    const navItems = useMemo(() => {
     if (user.role === 'student') {
-      return [
+        return [
         { label: 'Dashboard', path: '/dashboard', icon: LayoutDashboard },
         { label: 'Groups', path: '/groups', icon: Users },
         { label: 'Schedule', path: '/bookings', icon: CalendarDays },
+        { label: 'Smart Timetable', path: '/smart-timetable', icon: CalendarDays },
         { label: 'Documents', path: '/documents', icon: FileText },
         { label: 'Research', path: '/research', icon: BookOpen },
         { label: 'Conferences', path: '/conferences', icon: Newspaper },
         { label: 'Tasks', path: '/tasks', icon: ClipboardList },
         { label: 'Meetings', path: '/meetings', icon: NotebookPen },
         { label: 'Notifications', path: '/notifications', icon: Bell },
-      ];
+        ];
     }
 
-    if (user.role === 'faculty') {
-      return [
-        { label: 'Dashboard', path: '/dashboard', icon: LayoutDashboard },
-        { label: 'Availability', path: '/bookings', icon: CalendarDays },
-        { label: 'Groups', path: '/groups', icon: Users },
-        { label: 'Documents', path: '/documents', icon: FileText },
-        { label: 'Research', path: '/research', icon: BookOpen },
-        { label: 'Meetings', path: '/meetings', icon: NotebookPen },
-        { label: 'Announcements', path: '/announcements', icon: MessageSquareText },
-        { label: 'Notifications', path: '/notifications', icon: Bell },
-      ];
-    }
+        if (user.role === 'faculty') {
+        return [
+            { label: 'Dashboard', path: '/dashboard', icon: LayoutDashboard },
+            { label: 'Availability', path: '/bookings', icon: CalendarDays },
+            { label: 'Groups', path: '/groups', icon: Users },
+            { label: 'Documents', path: '/documents', icon: FileText },
+            { label: 'Research', path: '/research', icon: BookOpen },
+            { label: 'Meetings', path: '/meetings', icon: NotebookPen },
+            { label: 'Announcements', path: '/announcements', icon: MessageSquareText },
+            { label: 'Notifications', path: '/notifications', icon: Bell },
+        ];
+        }
 
     return [
       { label: 'Dashboard', path: '/dashboard', icon: LayoutDashboard },
@@ -749,6 +730,9 @@ function PageRouter({ user, state, refresh }: { user: User; state: AppState; ref
   if (pathname === '/semesters') {
     return <SemestersPage />;
   }
+  if (pathname === '/smart-timetable') {
+  return <SmartTimetable userId={user.id} />;
+  }
 
   return <NotFound />;
 }
@@ -847,17 +831,22 @@ function BookingPage({ user, state, refresh }: { user: User; state: AppState; re
   const [agenda, setAgenda] = useState('Review the latest project progress and agree on next steps.');
   const [requestError, setRequestError] = useState('');
   const [requestNotice, setRequestNotice] = useState('');
-  const tomorrow = new Date();
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  const [availabilityForm, setAvailabilityForm] = useState({
-    date: `${tomorrow.getFullYear()}-${String(tomorrow.getMonth() + 1).padStart(2, '0')}-${String(tomorrow.getDate()).padStart(2, '0')}`,
-    start: '10:00',
-    end: '10:45',
-  });
   const [availabilityError, setAvailabilityError] = useState('');
+  const [availabilityNotice, setAvailabilityNotice] = useState('');
+  const [isUploadingTimetable, setIsUploadingTimetable] = useState(false);
   const canBook = user.role === 'student';
   const activeBookingStatuses = ['pending', 'confirmed', 'reschedule_requested'];
   const selectedGuide = faculty.find((person) => person.id === selectedGuideId);
+  // Show only the upcoming Monday-Saturday availability week.
+  const availabilityWeekStart = new Date();
+  availabilityWeekStart.setHours(0, 0, 0, 0);
+  const currentDay = availabilityWeekStart.getDay();
+  const daysUntilMonday = currentDay === 0 ? 1 : currentDay === 1 ? 0 : 8 - currentDay;
+  availabilityWeekStart.setDate(availabilityWeekStart.getDate() + daysUntilMonday);
+  const availabilityWeekEnd = new Date(availabilityWeekStart);
+  availabilityWeekEnd.setDate(availabilityWeekStart.getDate() + 5);
+  const availabilityWeekStartString = availabilityWeekStart.toISOString().slice(0, 10);
+  const availabilityWeekEndString = availabilityWeekEnd.toISOString().slice(0, 10);
   const availableSlots = state.guideAvailability
     .filter((slot) => {
       const occupied = state.bookings.some((booking) =>
@@ -867,7 +856,11 @@ function BookingPage({ user, state, refresh }: { user: User; state: AppState; re
         booking.start < slot.end &&
         slot.start < booking.end,
       );
-      return slot.guideId === selectedGuideId && slot.date >= new Date().toISOString().slice(0, 10) && !occupied;
+      return slot.guideId === selectedGuideId &&
+        slot.date >= availabilityWeekStartString &&
+        slot.date <= availabilityWeekEndString &&
+        new Date(`${slot.date}T00:00:00`).getDay() !== 0 &&
+        !occupied;
     })
     .sort((first, second) => `${first.date}${first.start}`.localeCompare(`${second.date}${second.start}`));
   const selectedSlot = availableSlots.find((slot) => slot.id === selectedSlotId);
@@ -889,7 +882,6 @@ function BookingPage({ user, state, refresh }: { user: User; state: AppState; re
       setRequestError('Enter a meeting purpose and agenda.');
       return;
     }
-
     try {
       createBooking({
         groupId: state.groups.find((group) => group.memberIds.includes(user.id))?.id ?? state.groups[0]?.id ?? 'g-edu-01',
@@ -910,22 +902,332 @@ function BookingPage({ user, state, refresh }: { user: User; state: AppState; re
     }
   };
 
-  const handleAvailabilitySubmit = (event: React.FormEvent) => {
-    event.preventDefault();
-    try {
-      createGuideAvailability({ guideId: user.id, ...availabilityForm });
-      setAvailabilityError('');
-      setAvailabilityForm({ ...availabilityForm, start: '10:00', end: '10:45' });
-      refresh();
-    } catch (error) {
-      setAvailabilityError(error instanceof Error ? error.message : 'Unable to publish availability.');
-    }
+  const toMinutes = (time: string) => {
+    const match = time.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+    if (!match) throw new Error(`Could not understand timetable time: ${time}`);
+    let hour = Number(match[1]) % 12;
+    if (match[3].toUpperCase() === 'PM') hour += 12;
+    return hour * 60 + Number(match[2]);
   };
+  const to24Hour = (minutes: number) => `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
+  const weekdayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+  const handleTimetableUpload = async (
+  event: React.ChangeEvent<HTMLInputElement>
+) => {
+  const input = event.currentTarget;
+  const file = input.files?.[0];
+
+  if (!file) return;
+
+  setAvailabilityError('');
+  setAvailabilityNotice('');
+  setIsUploadingTimetable(true);
+
+  try {
+    if (
+      file.type !== 'application/pdf' &&
+      !file.name.toLowerCase().endsWith('.pdf')
+    ) {
+      throw new Error('Please upload a PDF timetable.');
+    }
+
+    const pdfData = await extractPDFData(file);
+    const parsed = parseTimetableItems(pdfData.items);
+
+    if (!parsed.freeSlots || parsed.freeSlots.length === 0) {
+      throw new Error(
+        'No free periods detected. Please upload a timetable containing clearly labelled days and time periods.'
+      );
+    }
+
+    const meetingDuration = 45;
+
+    const weekdayNames = [
+      'Sunday',
+      'Monday',
+      'Tuesday',
+      'Wednesday',
+      'Thursday',
+      'Friday',
+      'Saturday',
+    ];
+
+    const toMinutes = (time: string) => {
+      const match = time.match(
+        /^(\d{1,2}):(\d{2})\s*(AM|PM)$/i
+      );
+
+      if (!match) {
+        throw new Error(`Invalid time format: ${time}`);
+      }
+
+      let hour = Number(match[1]) % 12;
+
+      if (match[3].toUpperCase() === 'PM') {
+        hour += 12;
+      }
+
+      return hour * 60 + Number(match[2]);
+    };
+
+    const to24Hour = (minutes: number) =>
+      `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(
+        minutes % 60
+      ).padStart(2, '0')}`;
+
+    /*
+     * STEP 1:
+     * Merge overlapping and consecutive free periods for each weekday.
+     */
+
+    const freePeriodsByDay: Record<
+      string,
+      { start: number; end: number }[]
+    > = {};
+
+    for (const slot of parsed.freeSlots) {
+      const start = toMinutes(slot.start);
+      const end = toMinutes(slot.end);
+
+      if (end <= start) continue;
+
+      if (!freePeriodsByDay[slot.day]) {
+        freePeriodsByDay[slot.day] = [];
+      }
+
+      freePeriodsByDay[slot.day].push({
+        start,
+        end,
+      });
+    }
+
+    for (const day of Object.keys(freePeriodsByDay)) {
+      const periods = freePeriodsByDay[day].sort(
+        (a, b) => a.start - b.start
+      );
+
+      const merged: { start: number; end: number }[] = [];
+
+      for (const period of periods) {
+        const previous = merged[merged.length - 1];
+
+        if (previous && period.start <= previous.end) {
+          previous.end = Math.max(previous.end, period.end);
+        } else {
+          merged.push({ ...period });
+        }
+      }
+
+      freePeriodsByDay[day] = merged;
+    }
+
+    /*
+ * STEP 2:
+ * Generate meeting slots for Monday to Saturday
+ * of the current/upcoming week only.
+ */
+
+const today = new Date();
+today.setHours(0, 0, 0, 0);
+
+const generated: {
+  date: string;
+  start: string;
+  end: string;
+}[] = [];
+
+// Publish the upcoming Monday-Saturday week (never Sunday).
+const weekStart = new Date(today);
+const dayOfWeek = today.getDay();
+const daysUntilNextMonday = dayOfWeek === 0 ? 1 : 8 - dayOfWeek;
+weekStart.setDate(today.getDate() + daysUntilNextMonday);
+
+for (let offset = 0; offset < 6; offset++) {
+  const date = new Date(weekStart);
+  date.setDate(weekStart.getDate() + offset);
+  const dayName = weekdayNames[date.getDay()];
+  if (dayName === 'Sunday') continue;
+
+  const periods = freePeriodsByDay[dayName] ?? [];
+  if (!periods.length) continue;
+
+  const dateString = [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, '0'),
+    String(date.getDate()).padStart(2, '0'),
+  ].join('-');
+
+  for (const period of periods) {
+    for (let start = period.start; start + meetingDuration <= period.end; start += meetingDuration) {
+      generated.push({ date: dateString, start: to24Hour(start), end: to24Hour(start + meetingDuration) });
+    }
+  }
+}
+
+    /*
+     * STEP 3:
+     * Remove exact duplicates from the generated list.
+     */
+
+    const uniqueGenerated = Array.from(
+      new Map(
+        generated.map((slot) => [
+          `${slot.date}|${slot.start}|${slot.end}`,
+          slot,
+        ])
+      ).values()
+    );
+
+    if (!uniqueGenerated.length) {
+      throw new Error(
+        'The timetable was read, but no 45-minute meeting slots could be generated.'
+      );
+    }
+
+    /*
+     * STEP 4:
+     * Remove the guide's old future availability,
+     * but preserve slots that have meeting requests.
+     */
+
+      const currentState = loadState();
+
+  // Ensure the authenticated Supabase faculty account exists
+  // in EduBridge's local store as well.
+  const localGuide = currentState.users.find(
+    (storedUser) => storedUser.id === user.id
+  );
+
+  if (!localGuide) {
+    currentState.users.push({
+      ...user,
+      password: '',
+      role: 'faculty',
+    });
+
+    saveState(currentState);
+  }
+
+    const todayString = [
+      today.getFullYear(),
+      String(today.getMonth() + 1).padStart(2, '0'),
+      String(today.getDate()).padStart(2, '0'),
+    ].join('-');
+
+    const removableSlots = currentState.guideAvailability.filter(
+      (slot) => {
+        if (slot.guideId !== user.id) return false;
+        if (slot.date < todayString) return false;
+
+        const hasBooking = currentState.bookings.some(
+          (booking) =>
+            booking.guideId === user.id &&
+            booking.date === slot.date &&
+            activeBookingStatuses.includes(booking.status) &&
+            booking.start < slot.end &&
+            slot.start < booking.end
+        );
+
+        return !hasBooking;
+      }
+    );
+
+    // Remove old unbooked future slots in one state update. This avoids
+    // stale IDs causing "availability slot could not be found" errors.
+    currentState.guideAvailability = currentState.guideAvailability.filter(
+      (slot) => !removableSlots.some((removable) => removable.id === slot.id)
+    );
+    saveState(currentState);
+
+    /*
+     * STEP 5:
+     * Publish slots, preserving existing bookings.
+     */
+
+    let created = 0;
+    let skipped = 0;
+    const errors: string[] = [];
+
+    for (const slot of uniqueGenerated) {
+      const latestState = loadState();
+
+      const hasBooking = latestState.bookings.some(
+        (booking) =>
+          booking.guideId === user.id &&
+          booking.date === slot.date &&
+          activeBookingStatuses.includes(booking.status) &&
+          booking.start < slot.end &&
+          slot.start < booking.end
+      );
+
+      if (hasBooking) {
+        skipped++;
+        continue;
+      }
+
+      const alreadyExists = latestState.guideAvailability.some(
+        (existing) =>
+          existing.guideId === user.id &&
+          existing.date === slot.date &&
+          existing.start === slot.start &&
+          existing.end === slot.end
+      );
+
+      if (alreadyExists) {
+        skipped++;
+        continue;
+      }
+
+      try {
+        createGuideAvailability({
+          guideId: user.id,
+          ...slot,
+        });
+
+        created++;
+      } catch (error) {
+        skipped++;
+
+        if (errors.length < 5) {
+          errors.push(
+            error instanceof Error
+              ? error.message
+              : String(error)
+          );
+        }
+      }
+    }
+
+    refresh();
+
+    setAvailabilityNotice(
+      `Timetable processed successfully. ${created} meeting slots published for the upcoming Monday–Saturday week. ${
+        skipped > 0 ? `${skipped} slots skipped.` : ''
+      } ${
+        errors.length
+          ? `Errors: ${errors.join(' | ')}`
+          : ''
+      }`
+    );
+
+  } catch (error) {
+    setAvailabilityError(
+      error instanceof Error
+        ? error.message
+        : 'Unable to process timetable PDF.'
+    );
+  } finally {
+    setIsUploadingTimetable(false);
+    input.value = '';
+  }
+};
 
   const handleRemoveAvailability = (slotId: string) => {
     try {
       removeGuideAvailability(slotId, user.id);
       setAvailabilityError('');
+      setAvailabilityNotice('Availability removed.');
       refresh();
     } catch (error) {
       setAvailabilityError(error instanceof Error ? error.message : 'Unable to remove availability.');
@@ -946,191 +1248,64 @@ function BookingPage({ user, state, refresh }: { user: User; state: AppState; re
               <div className="grid gap-5 lg:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)]">
                 <div>
                   <label htmlFor="guide-select" className="mb-2 block text-sm text-slate-300">Faculty guide</label>
-                  <select
-                    id="guide-select"
-                    value={selectedGuideId}
-                    onChange={(event) => {
-                      setSelectedGuideId(event.target.value);
-                      setSelectedSlotId('');
-                      setRequestNotice('');
-                    }}
-                    className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white"
-                  >
-                    {faculty.map((guide) => (
-                      <option key={guide.id} value={guide.id}>{guide.fullName} · {guide.department}</option>
-                    ))}
+                  <select id="guide-select" value={selectedGuideId} onChange={(event) => { setSelectedGuideId(event.target.value); setSelectedSlotId(''); setRequestNotice(''); }} className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white">
+                    {faculty.map((guide) => <option key={guide.id} value={guide.id}>{guide.fullName} · {guide.department}</option>)}
                   </select>
-                  {selectedGuide ? (
-                    <div className="mt-4 rounded-2xl border border-sky-500/20 bg-sky-500/5 p-4">
-                      <p className="font-semibold text-white">{selectedGuide.fullName}</p>
-                      <p className="mt-1 text-sm text-sky-300">{selectedGuide.department}</p>
-                      <p className="mt-3 text-sm leading-6 text-slate-300">{selectedGuide.profile}</p>
-                    </div>
-                  ) : null}
+                  {selectedGuide ? <div className="mt-4 rounded-2xl border border-sky-500/20 bg-sky-500/5 p-4"><p className="font-semibold text-white">{selectedGuide.fullName}</p><p className="mt-1 text-sm text-sky-300">{selectedGuide.department}</p><p className="mt-3 text-sm leading-6 text-slate-300">{selectedGuide.profile}</p></div> : null}
                 </div>
                 <div>
-                  <div className="mb-3 flex items-end justify-between gap-3">
-                    <div>
-                      <p className="text-xs uppercase tracking-[0.2em] text-sky-300">Step 2 · Check availability</p>
-                      <h4 className="mt-1 text-lg font-semibold text-white">Open meeting times</h4>
-                    </div>
-                    <span className="text-xs text-slate-400">{availableSlots.length} available</span>
-                  </div>
-                  {availableSlots.length ? (
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      {availableSlots.map((slot) => {
-                        const selected = selectedSlotId === slot.id;
-                        return (
-                          <button
-                            key={slot.id}
-                            type="button"
-                            aria-pressed={selected}
-                            onClick={() => {
-                              setSelectedSlotId(slot.id);
-                              setRequestError('');
-                              setRequestNotice('');
-                            }}
-                            className={`rounded-2xl border p-4 text-left transition ${selected ? 'border-sky-400 bg-sky-500/10 ring-1 ring-sky-400/40' : 'border-slate-800 bg-slate-950/60 hover:border-sky-500/50'}`}
-                          >
-                            <span className="block text-sm font-semibold text-white">{new Date(`${slot.date}T00:00:00`).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}</span>
-                            <span className="mt-1 block text-sm text-slate-300">{slot.start}–{slot.end}</span>
-                            <span className={`mt-3 inline-flex rounded-full px-2 py-1 text-xs ${selected ? 'bg-sky-500 text-slate-950' : 'bg-emerald-500/10 text-emerald-300'}`}>{selected ? 'Selected' : 'Available'}</span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  ) : (
-                    <div className="rounded-2xl border border-dashed border-slate-700 bg-slate-950/40 p-6 text-sm text-slate-400">
-                      This guide has no open times published right now. Select another guide or check again later.
-                    </div>
-                  )}
+                  <div className="mb-3 flex items-end justify-between gap-3"><div><p className="text-xs uppercase tracking-[0.2em] text-sky-300">Step 2 · Check availability</p><h4 className="mt-1 text-lg font-semibold text-white">Open meeting times</h4></div><span className="text-xs text-slate-400">{availableSlots.length} available</span></div>
+                  {availableSlots.length ? <div className="grid gap-3 sm:grid-cols-2">{availableSlots.map((slot) => { const selected = selectedSlotId === slot.id; return <button key={slot.id} type="button" aria-pressed={selected} onClick={() => { setSelectedSlotId(slot.id); setRequestError(''); setRequestNotice(''); }} className={`rounded-2xl border p-4 text-left transition ${selected ? 'border-sky-400 bg-sky-500/10 ring-1 ring-sky-400/40' : 'border-slate-800 bg-slate-950/60 hover:border-sky-500/50'}`}><span className="block text-sm font-semibold text-white">{new Date(`${slot.date}T00:00:00`).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}</span><span className="mt-1 block text-sm text-slate-300">{slot.start}–{slot.end}</span><span className={`mt-3 inline-flex rounded-full px-2 py-1 text-xs ${selected ? 'bg-sky-500 text-slate-950' : 'bg-emerald-500/10 text-emerald-300'}`}>{selected ? 'Selected' : 'Available'}</span></button>; })}</div> : <div className="rounded-2xl border border-dashed border-slate-700 bg-slate-950/40 p-6 text-sm text-slate-400">This guide has no open times published right now. Select another guide or check again later.</div>}
                 </div>
               </div>
-            ) : (
-              <div className="rounded-2xl border border-dashed border-slate-700 p-6 text-sm text-slate-400">No faculty guides are available to select yet.</div>
-            )}
+            ) : <div className="rounded-2xl border border-dashed border-slate-700 p-6 text-sm text-slate-400">No faculty guides are available to select yet.</div>}
           </section>
-
-          <section className="rounded-3xl border border-slate-800 bg-slate-900/80 p-6">
-            <div className="mb-5">
-              <p className="text-xs uppercase tracking-[0.25em] text-sky-300">Step 3 · Send a request</p>
-              <h3 className="mt-2 text-xl font-bold text-white">Request to meet your guide</h3>
-            </div>
-            <form onSubmit={handleSubmit} className="grid gap-4 md:grid-cols-2">
-              <div className="rounded-xl border border-slate-800 bg-slate-950/60 px-4 py-3 text-sm">
-                <p className="text-slate-400">Selected guide</p>
-                <p className="mt-1 font-medium text-white">{selectedGuide?.fullName ?? 'Choose a guide above'}</p>
-              </div>
-              <div className="rounded-xl border border-slate-800 bg-slate-950/60 px-4 py-3 text-sm">
-                <p className="text-slate-400">Selected time</p>
-                <p className="mt-1 font-medium text-white">{selectedSlot ? `${selectedSlot.date} · ${selectedSlot.start}–${selectedSlot.end}` : 'Choose an available time above'}</p>
-              </div>
-              <div className="md:col-span-2">
-                <label htmlFor="meeting-purpose" className="mb-2 block text-sm text-slate-300">Meeting purpose</label>
-                <input id="meeting-purpose" required value={purpose} onChange={(event) => setPurpose(event.target.value)} className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white" />
-              </div>
-              <div className="md:col-span-2">
-                <label htmlFor="meeting-agenda" className="mb-2 block text-sm text-slate-300">Agenda for your guide</label>
-                <textarea id="meeting-agenda" required value={agenda} onChange={(event) => setAgenda(event.target.value)} rows={3} className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white" />
-              </div>
-              {requestError ? <p role="alert" className="md:col-span-2 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">{requestError}</p> : null}
-              {requestNotice ? <p role="status" className="md:col-span-2 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">{requestNotice}</p> : null}
-              <button type="submit" disabled={!selectedSlot || !selectedGuide} className="md:col-span-2 inline-flex items-center justify-center gap-2 rounded-xl bg-sky-500 px-4 py-3 font-semibold text-slate-950 hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-50">
-                <CalendarDays className="h-4 w-4" />
-                Send meeting request
-              </button>
-            </form>
-          </section>
+          <section className="rounded-3xl border border-slate-800 bg-slate-900/80 p-6"><div className="mb-5"><p className="text-xs uppercase tracking-[0.25em] text-sky-300">Step 3 · Send a request</p><h3 className="mt-2 text-xl font-bold text-white">Request to meet your guide</h3></div><form onSubmit={handleSubmit} className="grid gap-4 md:grid-cols-2"><div className="rounded-xl border border-slate-800 bg-slate-950/60 px-4 py-3 text-sm"><p className="text-slate-400">Selected guide</p><p className="mt-1 font-medium text-white">{selectedGuide?.fullName ?? 'Choose a guide above'}</p></div><div className="rounded-xl border border-slate-800 bg-slate-950/60 px-4 py-3 text-sm"><p className="text-slate-400">Selected time</p><p className="mt-1 font-medium text-white">{selectedSlot ? `${selectedSlot.date} · ${selectedSlot.start}–${selectedSlot.end}` : 'Choose an available time above'}</p></div><div className="md:col-span-2"><label htmlFor="meeting-purpose" className="mb-2 block text-sm text-slate-300">Meeting purpose</label><input id="meeting-purpose" required value={purpose} onChange={(event) => setPurpose(event.target.value)} className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white" /></div><div className="md:col-span-2"><label htmlFor="meeting-agenda" className="mb-2 block text-sm text-slate-300">Agenda for your guide</label><textarea id="meeting-agenda" required value={agenda} onChange={(event) => setAgenda(event.target.value)} rows={3} className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white" /></div>{requestError ? <p role="alert" className="md:col-span-2 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">{requestError}</p> : null}{requestNotice ? <p role="status" className="md:col-span-2 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">{requestNotice}</p> : null}<button type="submit" disabled={!selectedSlot || !selectedGuide} className="md:col-span-2 inline-flex items-center justify-center gap-2 rounded-xl bg-sky-500 px-4 py-3 font-semibold text-slate-950 hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-50"><CalendarDays className="h-4 w-4" />Send meeting request</button></form></section>
         </>
       ) : user.role === 'faculty' ? (
         <section className="rounded-3xl border border-slate-800 bg-slate-900/80 p-6">
-          <div className="mb-5">
-            <p className="text-xs uppercase tracking-[0.25em] text-sky-300">Guide availability</p>
-            <h3 className="mt-2 text-2xl font-bold text-white">Publish open meeting times</h3>
-            <p className="mt-2 text-sm text-slate-400">Students can request only the dates and times you publish here.</p>
-          </div>
-          <form onSubmit={handleAvailabilitySubmit} className="grid gap-4 md:grid-cols-3">
-            <div>
-              <label htmlFor="availability-date" className="mb-2 block text-sm text-slate-300">Date</label>
-              <input id="availability-date" required min={new Date().toISOString().slice(0, 10)} type="date" value={availabilityForm.date} onChange={(event) => setAvailabilityForm({ ...availabilityForm, date: event.target.value })} className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white" />
-            </div>
-            <div>
-              <label htmlFor="availability-start" className="mb-2 block text-sm text-slate-300">Start time</label>
-              <input id="availability-start" required type="time" value={availabilityForm.start} onChange={(event) => setAvailabilityForm({ ...availabilityForm, start: event.target.value })} className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white" />
-            </div>
-            <div>
-              <label htmlFor="availability-end" className="mb-2 block text-sm text-slate-300">End time</label>
-              <input id="availability-end" required type="time" value={availabilityForm.end} onChange={(event) => setAvailabilityForm({ ...availabilityForm, end: event.target.value })} className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white" />
-            </div>
-            <button type="submit" className="md:col-span-3 rounded-xl bg-sky-500 px-4 py-3 font-semibold text-slate-950 hover:bg-sky-400">Publish availability</button>
-          </form>
-          {availabilityError ? <p role="alert" className="mt-4 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">{availabilityError}</p> : null}
-          <div className="mt-6 space-y-3">
-            {state.guideAvailability.filter((slot) => slot.guideId === user.id).map((slot) => {
-              const occupied = state.bookings.some((booking) =>
-                booking.guideId === user.id &&
-                booking.date === slot.date &&
-                activeBookingStatuses.includes(booking.status) &&
-                booking.start < slot.end &&
-                slot.start < booking.end,
-              );
-              return (
-                <div key={slot.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-950/60 px-4 py-3">
-                  <div>
-                    <p className="font-medium text-white">{slot.date} · {slot.start}–{slot.end}</p>
-                    <p className={`mt-1 text-xs ${occupied ? 'text-amber-300' : 'text-emerald-300'}`}>{occupied ? 'Requested or booked' : 'Open for student requests'}</p>
+          <div className="mb-5"><p className="text-xs uppercase tracking-[0.25em] text-sky-300">Guide availability</p><h3 className="mt-2 text-2xl font-bold text-white">Upload your timetable</h3><p className="mt-2 text-sm text-slate-400">Upload your weekly timetable PDF. EduBridge will detect your free periods and publish 45-minute meeting slots for the upcoming Monday–Saturday week. Your timetable refreshes when you upload it again.</p></div>
+          <div className="rounded-2xl border border-dashed border-slate-700 bg-slate-950/50 p-5"><label htmlFor="faculty-timetable-pdf" className="mb-3 block text-sm font-medium text-slate-200">Faculty timetable PDF</label><input id="faculty-timetable-pdf" type="file" accept=".pdf,application/pdf" onChange={handleTimetableUpload} disabled={isUploadingTimetable} className="block w-full text-sm text-slate-300 file:mr-4 file:rounded-xl file:border-0 file:bg-sky-500 file:px-4 file:py-2 file:font-semibold file:text-slate-950 hover:file:bg-sky-400 disabled:opacity-60" />{isUploadingTimetable ? <p className="mt-3 text-sm text-sky-300">Reading timetable and generating availability…</p> : null}</div>
+          {availabilityError ? <p role="alert" className="mt-4 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">{availabilityError}</p> : null}{availabilityNotice ? <p role="status" className="mt-4 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">{availabilityNotice}</p> : null}
+          <div className="mt-6 space-y-4">
+            {(() => {
+              const facultySlots = state.guideAvailability
+                .filter((slot) =>
+                  slot.guideId === user.id &&
+                  slot.date >= availabilityWeekStartString &&
+                  slot.date <= availabilityWeekEndString &&
+                  new Date(`${slot.date}T00:00:00`).getDay() !== 0
+                )
+                .sort((a, b) => `${a.date}${a.start}`.localeCompare(`${b.date}${b.start}`));
+              const byDate = new Map<string, typeof facultySlots>();
+              facultySlots.forEach((slot) => {
+                const daySlots = byDate.get(slot.date) ?? [];
+                daySlots.push(slot);
+                byDate.set(slot.date, daySlots);
+              });
+              return byDate.size ? Array.from(byDate.entries()).map(([date, daySlots]) => (
+                <div key={date} className="rounded-2xl border border-slate-800 bg-slate-950/50 p-4">
+                  <h4 className="mb-3 font-semibold text-white">{new Date(`${date}T00:00:00`).toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })}</h4>
+                  <div className="flex flex-wrap gap-2">
+                    {daySlots.map((slot) => {
+                      const occupied = state.bookings.some((booking) => booking.guideId === user.id && booking.date === slot.date && activeBookingStatuses.includes(booking.status) && booking.start < slot.end && slot.start < booking.end);
+                      return <div key={slot.id} className={`flex items-center gap-2 rounded-xl border px-3 py-2 ${occupied ? 'border-amber-500/30 bg-amber-500/5' : 'border-emerald-500/20 bg-emerald-500/5'}`}>
+                        <span className="text-sm text-white">{slot.start}–{slot.end}</span>
+                        <span className={`text-xs ${occupied ? 'text-amber-300' : 'text-emerald-300'}`}>{occupied ? 'Booked' : 'Open'}</span>
+                        <button type="button" disabled={occupied} onClick={() => handleRemoveAvailability(slot.id)} className="text-xs text-slate-400 hover:text-rose-300 disabled:opacity-40" aria-label={`Remove ${slot.start} slot`}>×</button>
+                      </div>;
+                    })}
                   </div>
-                  <button type="button" disabled={occupied} onClick={() => handleRemoveAvailability(slot.id)} className="rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-200 hover:border-rose-400 hover:text-rose-200 disabled:cursor-not-allowed disabled:opacity-40">Remove</button>
                 </div>
-              );
-            })}
+              )) : <p className="rounded-xl border border-dashed border-slate-700 p-5 text-sm text-slate-400">No availability published for the upcoming week. Upload your timetable to generate blocks.</p>;
+            })()}
           </div>
         </section>
       ) : null}
-
-      <section className="rounded-3xl border border-slate-800 bg-slate-900/80 p-6">
-        <div className="mb-5 flex items-center justify-between gap-3">
-          <div>
-            <p className="text-xs uppercase tracking-[0.25em] text-sky-300">{canBook ? 'Your schedule' : 'Meeting management'}</p>
-            <h3 className="mt-2 text-2xl font-bold text-white">{canBook ? 'Your meeting requests' : 'Meeting request queue'}</h3>
-          </div>
-          <span className="rounded-full border border-slate-700 px-3 py-1 text-xs text-slate-300">{requests.length} total</span>
-        </div>
-        <div className="space-y-3">
-          {requests.length ? requests.map((booking) => {
-            const guideName = state.users.find((person) => person.id === booking.guideId)?.fullName ?? 'Faculty guide';
-            const studentName = state.users.find((person) => person.id === booking.studentId)?.fullName ?? 'Student';
-            const canReview = user.role !== 'student' && booking.status === 'pending';
-            return (
-              <div key={booking.id} className="flex flex-col gap-4 rounded-2xl border border-slate-800 bg-slate-950/60 p-4 md:flex-row md:items-center md:justify-between">
-                <div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <p className="font-semibold text-white">{booking.purpose}</p>
-                    <span className="rounded-full bg-slate-800 px-2 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-300">{booking.status.replace('_', ' ')}</span>
-                  </div>
-                  <p className="mt-2 text-sm text-slate-300">{booking.date} · {booking.start}–{booking.end}</p>
-                  <p className="mt-1 text-sm text-slate-400">{canBook ? `Guide: ${guideName}` : `Student: ${studentName}`}</p>
-                  <p className="mt-2 text-sm text-slate-400">{booking.agenda}</p>
-                </div>
-                {canReview ? (
-                  <div className="flex shrink-0 gap-2">
-                    <button type="button" onClick={() => { updateBookingStatus(booking.id, 'confirmed'); refresh(); }} className="rounded-lg bg-emerald-500 px-3 py-2 text-xs font-medium text-slate-950">Approve</button>
-                    <button type="button" onClick={() => { updateBookingStatus(booking.id, 'rejected'); refresh(); }} className="rounded-lg border border-slate-700 px-3 py-2 text-xs font-medium text-slate-200">Reject</button>
-                  </div>
-                ) : null}
-              </div>
-            );
-          }) : (
-            <div className="rounded-2xl border border-dashed border-slate-700 p-6 text-sm text-slate-400">
-              {canBook ? 'You have not sent any meeting requests yet.' : 'There are no meeting requests to review.'}
-            </div>
-          )}
-        </div>
-      </section>
+      <section className="rounded-3xl border border-slate-800 bg-slate-900/80 p-6"><div className="mb-5 flex items-center justify-between gap-3"><div><p className="text-xs uppercase tracking-[0.25em] text-sky-300">{canBook ? 'Your schedule' : 'Meeting management'}</p><h3 className="mt-2 text-2xl font-bold text-white">{canBook ? 'Your meeting requests' : 'Meeting request queue'}</h3></div><span className="rounded-full border border-slate-700 px-3 py-1 text-xs text-slate-300">{requests.length} total</span></div><div className="space-y-3">{requests.length ? requests.map((booking) => {const guideName = state.users.find((person) => person.id === booking.guideId)?.fullName ?? 'Faculty guide';const studentName = state.users.find((person) => person.id === booking.studentId)?.fullName ?? 'Student';const canReview = user.role !== 'student' && booking.status === 'pending';return <div key={booking.id} className="flex flex-col gap-4 rounded-2xl border border-slate-800 bg-slate-950/60 p-4 md:flex-row md:items-center md:justify-between"><div><div className="flex flex-wrap items-center gap-2"><p className="font-semibold text-white">{booking.purpose}</p><span className="rounded-full bg-slate-800 px-2 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-300">{booking.status.replace('_', ' ')}</span></div><p className="mt-2 text-sm text-slate-300">{booking.date} · {booking.start}–{booking.end}</p><p className="mt-1 text-sm text-slate-400">{canBook ? `Guide: ${guideName}` : `Student: ${studentName}`}</p><p className="mt-2 text-sm text-slate-400">{booking.agenda}</p></div>{canReview ? <div className="flex shrink-0 gap-2"><button type="button" onClick={() => { updateBookingStatus(booking.id, 'confirmed'); refresh(); }} className="rounded-lg bg-emerald-500 px-3 py-2 text-xs font-medium text-slate-950">Approve</button><button type="button" onClick={() => { updateBookingStatus(booking.id, 'rejected'); refresh(); }} className="rounded-lg border border-slate-700 px-3 py-2 text-xs font-medium text-slate-200">Reject</button></div> : null}</div>;}) : <div className="rounded-2xl border border-dashed border-slate-700 p-6 text-sm text-slate-400">{canBook ? 'You have not sent any meeting requests yet.' : 'There are no meeting requests to review.'}</div>}</div></section>
     </div>
   );
 }
-
 function DocumentsPage({ user, state, refresh }: { user: User; state: AppState; refresh: () => void }) {
   const [draft, setDraft] = useState({ title: 'Project charter', category: 'Project Proposal', description: 'Latest milestone submission and review notes.' });
 
@@ -1746,14 +1921,6 @@ function SemestersPage() {
   );
 }
 
-function MetricTile({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-2xl border border-slate-800 bg-slate-950/60 p-4">
-      <p className="text-sm text-slate-400">{label}</p>
-      <p className="mt-2 text-2xl font-bold text-white">{value}</p>
-    </div>
-  );
-}
 
 function SettingRow({ label, value }: { label: string; value: string }) {
   return (
